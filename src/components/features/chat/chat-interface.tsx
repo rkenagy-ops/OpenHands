@@ -11,12 +11,13 @@ import { ModelMessages } from "./model-messages";
 import { useModelStore } from "#/stores/model-store";
 import { useGoalStore } from "#/stores/goal-store";
 import { InteractiveChatBox } from "./interactive-chat-box";
+import { isAgentNotificationsStagingEnabled } from "./agent-notifications.constants";
+import { ChatSuggestions } from "./chat-suggestions";
 import { AgentState } from "#/types/agent-state";
 import { useFilteredEvents } from "#/hooks/use-filtered-events";
 import { useScrollToBottom } from "#/hooks/use-scroll-to-bottom";
 import { useLoadOlderEvents } from "#/hooks/use-load-older-events";
 import { TypingIndicator } from "./typing-indicator";
-import { ChatSuggestions } from "./chat-suggestions";
 import { ScrollProvider } from "#/context/scroll-context";
 import { useInitialQueryStore } from "#/stores/initial-query-store";
 import { useSendMessage } from "#/hooks/use-send-message";
@@ -47,6 +48,8 @@ import { useConversationWebSocket } from "#/contexts/conversation-websocket-cont
 import ChatStatusIndicator from "./chat-status-indicator";
 import { getStatusColor, getStatusText } from "#/utils/utils";
 import { useNewConversationCommand } from "#/hooks/mutation/use-new-conversation-command";
+import { useDrainAgentNotificationPrompts } from "#/hooks/chat/use-drain-agent-notification-prompts";
+import { useIngestAgentNotificationsFromEvents } from "#/hooks/chat/use-ingest-agent-notifications-from-events";
 import { useOptionalConversationId } from "#/hooks/use-conversation-id";
 import { useActiveConversation } from "#/hooks/query/use-active-conversation";
 import { I18nKey } from "#/i18n/declaration";
@@ -62,6 +65,7 @@ function getEntryPoint(
 }
 
 export function ChatInterface() {
+  useDrainAgentNotificationPrompts();
   const { trackInitialQuerySubmitted, trackUserMessageSent } = useTracking();
   const { setMessageToSend } = useConversationStore();
   const { errorMessage, errorCode, removeErrorMessage, setErrorMessage } =
@@ -153,6 +157,7 @@ export function ChatInterface() {
 
   const { selectedRepository, replayJson } = useInitialQueryStore();
   const { conversationId } = useOptionalConversationId();
+  useIngestAgentNotificationsFromEvents(conversationId);
 
   // The live goal banner renders in the scroll stream but advances via store
   // updates (in-progress goal events are filtered out of `renderableEvents`),
@@ -282,6 +287,14 @@ export function ChatInterface() {
   const isHistoryLoading = !showConversationMessages;
   const isChatLoading = isHistoryLoading && !isTask;
 
+  const showAgentNotifications =
+    isAgentNotificationsStagingEnabled() ||
+    (hasSubstantiveAgentActions &&
+      !isAgentRunning &&
+      !isChatLoading &&
+      !isProvisioningTask &&
+      !isArchivedConversation &&
+      !llmBlocked);
   const handleSendMessage = async (
     content: string,
     originalImages: File[],
@@ -636,6 +649,7 @@ export function ChatInterface() {
                 onSubmit={handleSendMessage}
                 disabled={isNewConversationPending || llmBlocked}
                 hasStartedConversation={hasStartedConversation}
+                showAgentNotifications={showAgentNotifications}
               />
             </div>
           )}
