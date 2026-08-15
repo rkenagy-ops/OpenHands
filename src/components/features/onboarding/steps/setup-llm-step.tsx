@@ -75,6 +75,7 @@ export function SetupLlmStep({ onBack, onNext }: SetupLlmStepProps) {
       typeof values["llm.base_url"] === "string" ? values["llm.base_url"] : "";
 
     const name = deriveProfileNameFromModel(model);
+
     const llmConfig: { model: string; api_key?: string; base_url?: string } = {
       model,
     };
