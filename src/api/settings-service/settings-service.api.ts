@@ -26,6 +26,7 @@ export const APP_PREFERENCE_FIELDS = [
   "language",
   "user_consents_to_analytics",
   "enable_sound_notifications",
+  "enable_desktop_notifications",
   "git_user_name",
   "git_user_email",
   "title_llm_profile",
@@ -607,7 +608,7 @@ class SettingsService {
   static async saveSettings(
     settings: Partial<Settings> & Record<string, unknown>,
   ): Promise<boolean> {
-    // Split app-level user-preference fields (language, git identity, sound
+    // Split app-level user-preference fields (language, git identity,
     // notifications, analytics consent, disabled_skills) off and route them
     // through `misc_settings_diff.app_preferences` (local) or as flat
     // top-level keys (cloud). The local agent-server stores them under
