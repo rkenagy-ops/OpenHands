@@ -128,9 +128,9 @@ export function RecommendedAutomationsLauncher({
                 draftMessage: prompt,
               });
             }
+            setMessageToSend(prompt, conversation.conversation_id);
             navigate?.(`/conversations/${conversation.conversation_id}`);
             onLaunched?.();
-            window.setTimeout(() => setMessageToSend(prompt), 0);
           },
           onError: () => {
             launchInFlightRef.current = false;
