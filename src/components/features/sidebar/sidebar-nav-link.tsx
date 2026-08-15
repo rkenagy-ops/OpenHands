@@ -39,6 +39,12 @@ interface SidebarNavLinkProps {
    * (e.g. the Extensions link being active on /mcp and /plugins too).
    */
   forceActive?: boolean;
+  /** When true, open the link in a new tab instead of navigating in-app. */
+  external?: boolean;
+  /** Optional target override (defaults to _blank when external). */
+  target?: string;
+  /** Optional rel override (defaults to noopener noreferrer when external). */
+  rel?: string;
 }
 
 export function SidebarNavLink({
@@ -52,6 +58,9 @@ export function SidebarNavLink({
   collapsed = false,
   hoverContent,
   forceActive = false,
+  external = false,
+  target,
+  rel,
 }: SidebarNavLinkProps) {
   const { currentPath } = useNavigation();
   const active = forceActive || isPathActive(currentPath, to, end);
@@ -60,6 +69,11 @@ export function SidebarNavLink({
     <NavigationLink
       to={to}
       end={end}
+      // NavigationLink skips client-side navigation when target is "_blank",
+      // so target/rel are all an external link needs; `external` stays local
+      // to this component as the switch that derives them.
+      target={external ? (target ?? "_blank") : target}
+      rel={external ? (rel ?? "noopener noreferrer") : rel}
       data-testid={testId}
       tabIndex={disabled ? -1 : 0}
       aria-label={collapsed ? label : undefined}
