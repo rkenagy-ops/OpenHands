@@ -34,6 +34,7 @@ import { CompactConversationRow } from "./compact-conversation-row";
 import { useConversationPanelPreferencesStore } from "#/stores/conversation-panel-preferences-store";
 import { cn } from "#/utils/utils";
 import { ConversationLayoutsMenu } from "./conversation-layouts-menu";
+import { ConversationActiveTagFilters } from "./conversation-active-tag-filters";
 import { ConversationPanelNewThreadPicker } from "./conversation-panel-new-thread-picker";
 import { ConversationGroupFolderList } from "./conversation-group-folder-list";
 import { ConversationPanelPinnedSection } from "./conversation-panel-pinned-section";
@@ -154,6 +155,12 @@ export function ConversationPanel({
   );
   const selectedTagFacets = useConversationPanelPreferencesStore(
     (state) => state.selectedTagFacets,
+  );
+  const toggleTagFacet = useConversationPanelPreferencesStore(
+    (state) => state.toggleTagFacet,
+  );
+  const clearTagFacets = useConversationPanelPreferencesStore(
+    (state) => state.clearTagFacets,
   );
   const groupFolderOrder = useConversationPanelPreferencesStore(
     (state) => state.groupFolderOrder,
@@ -1041,6 +1048,16 @@ export function ConversationPanel({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Sits above the list, not inside the scroll container: a filter that
+          scrolls out of view is a filter the user can't see. */}
+      {!compact && (
+        <ConversationActiveTagFilters
+          selectedFacets={selectedTagFacets}
+          onToggleFacet={toggleTagFacet}
+          onClearAll={clearTagFacets}
+        />
       )}
 
       <div
