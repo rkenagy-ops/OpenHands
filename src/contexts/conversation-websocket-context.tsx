@@ -465,6 +465,10 @@ export function ConversationWebSocketProvider({
         {
           conversationId: currentPlanningConversationId,
           filePath: path,
+          conversationUrl:
+            subConversations?.[0]?.conversation_url ?? conversationUrl,
+          sessionApiKey:
+            subConversations?.[0]?.session_api_key ?? sessionApiKey,
         },
         {
           onSuccess: (fileContent) => {
@@ -479,7 +483,14 @@ export function ConversationWebSocketProvider({
       // Clear the ref after calling the API
       latestPlanningFileEventRef.current = null;
     }
-  }, [isLoadingHistoryPlanning, readConversationFile, setPlanContent]);
+  }, [
+    isLoadingHistoryPlanning,
+    readConversationFile,
+    setPlanContent,
+    subConversations,
+    conversationUrl,
+    sessionApiKey,
+  ]);
 
   useEffect(() => {
     hasConnectedRefMain.current = false;
@@ -859,6 +870,12 @@ export function ConversationWebSocketProvider({
                     {
                       conversationId: planningConversationId,
                       filePath: path,
+                      conversationUrl:
+                        planningAgentConversation.conversation_url ??
+                        conversationUrl,
+                      sessionApiKey:
+                        planningAgentConversation.session_api_key ??
+                        sessionApiKey,
                     },
                     {
                       onSuccess: (fileContent) => {
@@ -889,6 +906,8 @@ export function ConversationWebSocketProvider({
       consumeMatchingPendingMessage,
       queryClient,
       subConversations,
+      conversationUrl,
+      sessionApiKey,
       conversationId,
       setExecutionStatus,
       appendInput,
