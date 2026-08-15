@@ -1,12 +1,16 @@
 import {
   ActionEvent,
+  ExecutionStatus,
   ImageContent,
   OpenHandsEvent,
   TextContent,
 } from "#/types/agent-server/core";
+import { ConversationStateUpdateEvent } from "#/types/agent-server/core/events/conversation-state-event";
 import {
+  getExecutionStatusFromConversationStateUpdate,
   isACPToolCallEvent,
   isActionEvent,
+  isConversationStateUpdateEvent,
   isMessageEvent,
   isObservationEvent,
   isStreamingDeltaEvent,
@@ -36,15 +40,124 @@ export const isSameStreamingSender = (
   b: OpenHandsEvent & { isFromPlanningAgent?: boolean },
 ): boolean => Boolean(a.isFromPlanningAgent) === Boolean(b.isFromPlanningAgent);
 
-const findLastUserMessageIndex = (events: OpenHandsEvent[]): number => {
+const isUserMessage = (event: OpenHandsEvent): boolean =>
+  isMessageEvent(event) && event.source === "user";
+
+const reportsAgentLeftRunning = (
+  event: ConversationStateUpdateEvent,
+): boolean => {
+  const status = getExecutionStatusFromConversationStateUpdate(event);
+  return status !== null && status !== ExecutionStatus.RUNNING;
+};
+
+// A mid-stream user message and a still-RUNNING state snapshot are transparent:
+// the deltas either side of them are one bubble. A snapshot that left RUNNING
+// ends the run, keeping an interrupted turn's deltas out of the next turn (#1899).
+//
+// `sender` scopes the check to one agent's run: the main and planning sockets
+// share this event store, so a status update sourced from the *other* socket
+// says nothing about whether this sender's run ended — it's transparent too
+// (#1656). Every caller threads its sender through so an unrelated socket's
+// terminal status update never closes a boundary that belongs to a
+// different, still-streaming sender.
+//
+// KNOWN GAP: this still assumes the closing ConversationStateUpdateEvent
+// always arrives. If a stream is abandoned with no closing event (dropped
+// connection that never recovers, backend crash) its dangling delta stays
+// "open" and can be merged into an unrelated later turn. There's no reliable
+// signal in this codebase today for "this stream is permanently dead" as
+// opposed to "still retrying" (the main socket reconnects with unlimited
+// attempts and replays the backlog by design, so closing on every `onclose`
+// would reintroduce bubble-splitting on ordinary reconnects). Needs its own
+// design work, not a mechanical fix here.
+const endsStreamingRun = (
+  event: OpenHandsEvent,
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
+): boolean => {
+  if (isUserMessage(event)) {
+    return false;
+  }
+  if (isConversationStateUpdateEvent(event)) {
+    if (!isSameStreamingSender(sender, event)) {
+      return false;
+    }
+    return reportsAgentLeftRunning(event);
+  }
+  return true;
+};
+
+const findTrailingStreamStart = (
+  events: OpenHandsEvent[],
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
+): number => {
+  let start = events.length;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (isMessageEvent(event) && event.source === "user") {
+    if (isStreamingDeltaEvent(event)) {
+      start = index;
+    } else if (endsStreamingRun(event, sender)) {
+      break;
+    }
+  }
+  return start;
+};
+
+// The last delta of the trailing streaming run belonging to `sender`, or -1
+// when the tail is not one. A different sender's delta is transparent — the
+// main and planning sockets share this event store (#1656) — so scanning
+// continues past it instead of stopping there.
+const findTrailingStreamLastDeltaIndex = (
+  events: OpenHandsEvent[],
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
+): number => {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (isStreamingDeltaEvent(event)) {
+      if (isSameStreamingSender(sender, event)) {
+        return index;
+      }
+      continue;
+    }
+    if (endsStreamingRun(event, sender)) {
+      break;
+    }
+  }
+  return -1;
+};
+
+// One past the trailing run's last delta — where its final event belongs.
+const findTrailingStreamEnd = (
+  events: OpenHandsEvent[],
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
+): number => {
+  const lastDeltaIndex = findTrailingStreamLastDeltaIndex(events, sender);
+  return lastDeltaIndex === -1 ? events.length : lastDeltaIndex + 1;
+};
+
+// The current turn's boundary: the last user message not sent mid-stream.
+const findLastUserMessageIndex = (
+  events: OpenHandsEvent[],
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
+): number => {
+  for (
+    let index = findTrailingStreamStart(events, sender) - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    if (isUserMessage(events[index])) {
       return index;
     }
   }
   return -1;
 };
+
+// The delta bubble an incoming delta merges into: the trailing run's last delta
+// from the same sender, looking past a mid-stream user message so it doesn't
+// split the reply (#1899).
+const findStreamingMergeTargetIndex = (
+  uiEvents: OpenHandsEvent[],
+  incoming: StreamingDeltaEvent,
+): number => findTrailingStreamLastDeltaIndex(uiEvents, incoming);
 
 // Join text blocks WITHOUT a separator: streaming deltas concatenate content
 // tokens directly with no separator between LLM content blocks, so using "\n"
@@ -85,7 +198,7 @@ const getCurrentTurnContentDeltas = (
   uiEvents: OpenHandsEvent[],
   finalEvent: OpenHandsEvent,
 ): { event: StreamingDeltaEvent; index: number }[] => {
-  const lastUserMessageIndex = findLastUserMessageIndex(uiEvents);
+  const lastUserMessageIndex = findLastUserMessageIndex(uiEvents, finalEvent);
   return uiEvents
     .map((event, index) => ({ event, index }))
     .filter(
@@ -103,11 +216,16 @@ const getCurrentTurnContentDeltas = (
 const getTrailingDeltas = (
   uiEvents: OpenHandsEvent[],
   selects: (event: StreamingDeltaEvent) => boolean,
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
 ): { event: StreamingDeltaEvent; index: number }[] => {
   const deltas: { event: StreamingDeltaEvent; index: number }[] = [];
   for (let index = uiEvents.length - 1; index >= 0; index -= 1) {
     const event = uiEvents[index];
     if (!isStreamingDeltaEvent(event)) {
+      // A mid-stream user message / RUNNING snapshot doesn't end the run (#1899).
+      if (!endsStreamingRun(event, sender)) {
+        continue;
+      }
       break;
     }
     if (selects(event)) {
@@ -117,11 +235,20 @@ const getTrailingDeltas = (
   return deltas;
 };
 
-const getTrailingContentDeltas = (uiEvents: OpenHandsEvent[]) =>
-  getTrailingDeltas(uiEvents, (event) => (event.content?.length ?? 0) > 0);
-
 // Sender-scoped: the main and planning sockets share this event store, so a
-// main-agent action must not strip the planning agent's live reasoning (#1656).
+// main-agent action must not strip the planning agent's live streamed text
+// or reasoning (#1656).
+const getTrailingContentDeltas = (
+  uiEvents: OpenHandsEvent[],
+  sender: OpenHandsEvent & { isFromPlanningAgent?: boolean },
+) =>
+  getTrailingDeltas(
+    uiEvents,
+    (event) =>
+      (event.content?.length ?? 0) > 0 && isSameStreamingSender(sender, event),
+    sender,
+  );
+
 const getTrailingReasoningDeltas = (
   uiEvents: OpenHandsEvent[],
   finalEvent: OpenHandsEvent,
@@ -131,6 +258,7 @@ const getTrailingReasoningDeltas = (
     (event) =>
       Boolean(event.reasoning_content) &&
       isSameStreamingSender(finalEvent, event),
+    finalEvent,
   );
 
 // Strip the streamed content deltas, keeping a delta only when it carries
@@ -224,13 +352,18 @@ const finalizeStreamingDeltasInPlace = (
     return null;
   }
 
+  // Render the final event where the stream ended, not at the tail, so it stays
+  // above a message the user sent mid-stream instead of jumping below it (#1899).
+  // Scoped to `finalEvent`'s sender so an interleaved planning-agent delta
+  // doesn't push it past the point where its own stream actually ended (#1656).
+  const streamEnd = findTrailingStreamEnd(uiEvents, finalEvent);
   const nextUiEvents = supersedeStreamingContent(
-    uiEvents,
+    uiEvents.slice(0, streamEnd),
     contentStreamingDeltas,
     eventRendersReasoning(finalEvent),
   );
   nextUiEvents.push(finalEvent);
-  return nextUiEvents;
+  return [...nextUiEvents, ...uiEvents.slice(streamEnd)];
 };
 
 /**
@@ -257,7 +390,7 @@ const supersedeStreamedThoughtWithAction = (
     return null;
   }
 
-  const contentDeltas = getTrailingContentDeltas(uiEvents);
+  const contentDeltas = getTrailingContentDeltas(uiEvents, action);
   if (contentDeltas.length === 0) {
     return null;
   }
@@ -335,14 +468,12 @@ export const handleEventForUI = (
       return newUiEvents;
     }
 
-    const lastIndex = newUiEvents.length - 1;
-    const lastEvent = newUiEvents[lastIndex];
-    if (
-      lastEvent &&
-      isStreamingDeltaEvent(lastEvent) &&
-      isSameStreamingSender(event, lastEvent)
-    ) {
-      newUiEvents[lastIndex] = mergeStreamingDeltaEvent(event, lastEvent);
+    const mergeIndex = findStreamingMergeTargetIndex(newUiEvents, event);
+    if (mergeIndex !== -1) {
+      newUiEvents[mergeIndex] = mergeStreamingDeltaEvent(
+        event,
+        newUiEvents[mergeIndex] as StreamingDeltaEvent,
+      );
       return newUiEvents;
     }
 
